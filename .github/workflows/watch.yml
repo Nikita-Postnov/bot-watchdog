@@ -1,0 +1,62 @@
+name: watch
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # GitHub может запаздывать на 5–20 мин — это нормально
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Отправить тестовое сообщение в TG и VK"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write            # только для keepalive-коммита раз в месяц
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Восстановить состояние
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: watch-state-${{ github.run_id }}
+          restore-keys: watch-state-
+
+      - name: Проверка
+        run: python3 watch.py
+        env:
+          WATCH_URL: ${{ secrets.WATCH_URL }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_PEER: ${{ secrets.VK_PEER }}
+          TEST_ALERT: ${{ github.event.inputs.test_alert == 'true' && '1' || '0' }}
+
+      - name: Сохранить состояние
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: watch-state-${{ github.run_id }}
+
+      # GitHub выключает расписание в публичном репо после 60 дней без коммитов.
+      # Раз в ~30 дней делаем пустой служебный коммит — расписание не отключится.
+      - name: Keepalive
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt 2592000 ]; then
+            date -u +%FT%TZ > .keepalive
+            git config user.name "watchdog-bot"
+            git config user.email "watchdog-bot@users.noreply.github.com"
+            git add .keepalive && git commit -m "keepalive" && git push
+          fi
